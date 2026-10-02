@@ -658,7 +658,8 @@ for (const d of DATASETS) {
 
 $("play").addEventListener("click", () => setPlaying(!playing));
 $("speed").addEventListener("click", () => {
-  speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
+  const speeds = [0.5, 1, 2, 4];
+  speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length];
   $("speed").textContent = `${speed}×`;
 });
 $("scrub").addEventListener("input", (evt) => {
