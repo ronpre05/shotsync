@@ -1,5 +1,7 @@
 # ShotSync
 
+**[See a replay of real sessions](https://ronpre05.github.io/shotsync/)**: recorded sensor data, the detector's state and each score, played back in the browser.
+
 A glove-mounted wearable prototype that gives a basketball player instant feedback on their shooting form. It detects each shot from sensor data, compares it against the player's own saved reference shot, and shows a similarity score on an LCD.
 
 Rather than judging against a universal "perfect" shot, ShotSync is personalised: the player saves a shot they are happy with, and later attempts are scored on how closely they match it.
@@ -49,6 +51,14 @@ python shotsync.py
 ```
 
 Stay still during calibration until the LCD shows `Ready`. Take a shot, then press the button to save it as the reference (`reference.json`). Later shots are scored against it. The script also prints a CSV log row per sample (time, light, grip state, acceleration, gyroscope, state, event, score) for offline analysis.
+
+## Session replay page
+
+`index.html` is a single-page viewer with no dependencies. It loads the logs in `data/`, plots the three sensor streams, and plays a session back with the glove's display and detector state alongside. To run it locally, serve the folder and open it in a browser:
+
+```bash
+python3 -m http.server
+```
 
 ## Limitations
 

@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShotSync session replay</title>
+<meta name="description" content="Replay of real sensor logs from ShotSync, a glove-mounted basketball shot tracker.">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --wash: rgba(11, 11, 11, 0.06);
+    --series-light: #2a78d6;
+    --series-accel: #eb6834;
+    --series-gyro: #1baf7a;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --lcd-ready: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --wash: rgba(255, 255, 255, 0.08);
+      --series-light: #3987e5;
+      --series-accel: #d95926;
+      --series-gyro: #199e70;
+      --lcd-ready: #3987e5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: var(--text-secondary); max-width: 70ch; }
+  a { color: inherit; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-top: 16px;
+  }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+  button {
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--wash); }
+  button[aria-pressed="true"] { border-color: var(--text-primary); font-weight: 600; }
+  .dataset-note { margin: 12px 0 0; }
+
+  .console { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 720px) { .console { grid-template-columns: 1fr; } }
+
+  .lcd {
+    border-radius: 8px;
+    padding: 14px 16px;
+    min-height: 84px;
+    color: #ffffff;
+    background: var(--lcd-ready);
+    font: 600 20px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-line;
+  }
+  .lcd[data-tone="good"] { background: var(--good); }
+  .lcd[data-tone="warning"] { background: var(--warning); color: #0b0b0b; }
+  .lcd[data-tone="critical"] { background: var(--critical); }
+  .label { font-size: 12px; color: var(--text-muted); margin: 0 0 6px; }
+  .states { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
+  .state {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: var(--text-muted);
+  }
+  .state[data-active="true"] { color: var(--text-primary); border-color: var(--text-primary); font-weight: 600; }
+  .transport { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 16px; }
+  .transport input[type="range"] { flex: 1 1 120px; min-width: 0; }
+  .clock { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+
+  .chart { position: relative; margin-top: 4px; }
+  .chart-title { font-weight: 600; margin: 12px 0 0; }
+  .chart-sub { font-size: 13px; color: var(--text-muted); margin: 0; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ref-label { fill: var(--text-muted); font-size: 11px; }
+  .event-label { fill: var(--text-secondary); font-size: 11px; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--text-secondary); margin-top: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 14px; height: 10px; border-radius: 2px; background: var(--wash); border: 1px solid var(--border); }
+  .rule { width: 14px; height: 0; border-top: 1px solid var(--text-muted); }
+
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    padding: 8px 10px;
+    font-size: 13px;
+    min-width: 150px;
+    z-index: 2;
+  }
+  .tooltip[hidden] { display: none; }
+  .tooltip .row { display: flex; justify-content: space-between; gap: 12px; }
+  .tooltip .row strong { font-variant-numeric: tabular-nums; }
+  .tooltip .key { display: inline-block; width: 10px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: middle; }
+  .tooltip .name { color: var(--text-secondary); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--text-muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .table-scroll { overflow-x: auto; }
+  .outcome { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+  .dot[data-tone="good"] { background: var(--good); }
+  .dot[data-tone="warning"] { background: var(--warning); }
+  .dot[data-tone="critical"] { background: var(--critical); }
+  footer { margin-top: 32px; color: var(--text-muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ShotSync session replay</h1>
+  <p>ShotSync is a glove-mounted prototype that detects basketball shots and scores each one against the player's own reference shot. This page replays logs recorded on the device during testing: the sensor readings, the shot detector's state and the scores are exactly what the glove produced.</p>
+  <p><a href="https://github.com/ronpre05/shotsync">Source code and write-up on GitHub</a></p>
+
+  <div class="filters" id="datasets" role="group" aria-label="Recorded session"></div>
+  <p class="dataset-note" id="dataset-note"></p>
+
+  <section class="card">
+    <div class="console">
+      <div>
+        <p class="label">Glove display</p>
+        <div class="lcd" id="lcd" aria-live="polite">Ready</div>
+
+        <div class="states" aria-label="Detector state">
+          <p class="label" style="margin:0">Detector state</p>
+          <div class="state" data-state="0">Idle</div>
+          <div class="state" data-state="1">Grip detected, waiting for motion</div>
+          <div class="state" data-state="2">In shot</div>
+        </div>
+
+        <div class="transport">
+          <button id="play" type="button">Play</button>
+          <button id="speed" type="button" aria-label="Playback speed">1×</button>
+          <span class="clock" id="clock">0.0 s</span>
+          <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Position in session">
+        </div>
+      </div>
+
+      <div id="charts">
+        <div class="legend">
+          <span><i class="swatch"></i>Shot in progress</span>
+          <span><i class="rule"></i>Detection threshold</span>
+        </div>
+        <div class="chart" id="chart-wrap">
+          <p class="chart-title">Palm light sensor</p>
+          <p class="chart-sub">Covered by the ball when gripped: the grip counts as closed below 100 and open again above 550</p>
+          <svg id="chart-light" role="img" aria-label="Palm light sensor level over time"></svg>
+          <p class="chart-title">Acceleration (g)</p>
+          <p class="chart-sub">With the grip closed, sustained motion above the calibrated threshold starts a shot</p>
+          <svg id="chart-accel" role="img" aria-label="Acceleration magnitude over time"></svg>
+          <p class="chart-title">Rotation speed (°/s)</p>
+          <p class="chart-sub">The wrist flick; its shape is compared with the reference shot</p>
+          <svg id="chart-gyro" role="img" aria-label="Gyroscope magnitude over time"></svg>
+          <div class="tooltip" id="tooltip" hidden></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Attempts in this session</h2>
+    <p>Each time the grip closed. Lower scores are closer to the reference shot: under 25 is good, 25 to 50 medium, above 50 poor.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>#</th><th class="num">Time</th><th>Outcome</th><th class="num">Score</th><th></th></tr></thead>
+        <tbody id="attempts"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Scores across all sessions</h2>
+    <p>One dot per scored shot. Good-form shots cluster low, deliberately poor shots score worse, and most non-shot motions are never scored at all. The two marked lines are the boundaries: good below 25, poor above 50.</p>
+    <div class="chart" id="scores-wrap">
+      <svg id="chart-scores" role="img" aria-label="Scores for each recorded session"></svg>
+      <div class="tooltip" id="scores-tooltip" hidden></div>
+    </div>
+    <div class="table-scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Session</th><th class="num">Attempts</th><th class="num">Scored</th><th class="num">Rejected</th><th class="num">Cancelled</th><th class="num">Mean score</th></tr></thead>
+        <tbody id="summary"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Built by Ron Prekopuca. Sampling pauses for a moment while the glove shows a result, which is why the lines break after each shot.</footer>
+</main>
+
+<script>
+const DATASETS = [
+  { id: "good_form", name: "Good-form shots", note: "Ten shots taken with consistent form from one spot." },
+  { id: "good_form_orientation", name: "Good form, varied positions", note: "Ten good-form shots taken from different places on the court." },
+  { id: "bad_form", name: "Bad-form shots", note: "Deliberately poor shots. They should still count as shots, but score worse." },
+  { id: "non_shot", name: "Passes and dribbles", note: "Other basketball motions: passes, pump fakes and dribbles. These should be rejected." },
+  { id: "idle_other_motions", name: "Idle gestures", note: "Claps, hands on hips, fist bumps. The grip closes but no shot should start." },
+];
+
+// Thresholds from the device code
+const CLOSE_T = 100, OPEN_T = 550;
+const SVG_NS = "http://www.w3.org/2000/svg";
+const GAP_SECONDS = 0.25;      // a longer gap between samples breaks the line
+const M = { top: 8, right: 40, bottom: 22, left: 44 };
+const PLOT_H = 110;
+
+const cache = new Map();
+let session = null;            // the dataset being shown
+let playhead = 0;              // seconds from the start of the session
+let playing = false;
+let speed = 1;
+let lastFrame = null;
+let chartWidth = 600;
+
+const $ = (id) => document.getElementById(id);
+
+function el(name, attrs = {}, parent) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+function tone(score) {
+  return score < 25 ? "good" : score < 50 ? "warning" : "critical";
+}
+function toneWord(score) {
+  return score < 25 ? "Good" : score < 50 ? "Medium" : "Poor";
+}
+
+// ---------- loading and parsing ----------
+
+async function load(id) {
+  if (cache.has(id)) return cache.get(id);
+  const text = await (await fetch(`data/${id}.csv`)).text();
+  const parsed = parse(text);
+  cache.set(id, parsed);
+  return parsed;
+}
+
+function parse(text) {
+  const lines = text.split(/\r?\n/);
+  const header = lines.findIndex((l) => l.startsWith("time,light"));
+  const threshold = /ACC_TH=([\d.]+)/.exec(lines.slice(0, header).join(" "));
+  const rows = [];
+  for (const line of lines.slice(header + 1)) {
+    const c = line.split(",");
+    if (c.length !== 8) continue;
+    rows.push({
+      t: +c[0], light: +c[1], grip: +c[2], accel: +c[3], gyro: +c[4],
+      state: +c[5], event: c[6], score: c[7] === "" ? null : +c[7],
+    });
+  }
+  const t0 = rows[0].t;
+  for (const r of rows) r.t -= t0;
+
+  // Group the event stream into attempts: one per grip close
+  const attempts = [];
+  let current = null;
+  for (const r of rows) {
+    if (r.event === "GRIP_START") {
+      current = { start: r.t, shotStart: null, end: null, outcome: "incomplete", score: null };
+      attempts.push(current);
+    } else if (!current) {
+      continue;
+    } else if (r.event === "SHOT_START") {
+      current.shotStart = r.t;
+    } else if (r.event === "GRIP_CANCEL") {
+      current.end = r.t; current.outcome = "cancelled";
+    } else if (r.event === "NON_SHOT") {
+      current.end = r.t; current.outcome = "rejected";
+    } else if (r.event === "SHOT_END_RELEASE") {
+      current.end = r.t;
+      current.score = r.score;
+      current.outcome = r.score === null ? "incomplete" : "scored";
+    }
+  }
+  return { rows, attempts, accelThreshold: threshold ? +threshold[1] : null, duration: rows[rows.length - 1].t };
+}
+
+// ---------- charts ----------
+
+function niceMax(v) {
+  const step = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * step >= v) return m * step;
+  return v;
+}
+
+function drawSeries(svg, key, color, refs) {
+  svg.replaceChildren();
+  const { rows, attempts, duration } = session;
+  const W = chartWidth, H = M.top + PLOT_H + M.bottom;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const yMax = niceMax(Math.max(...rows.map((r) => r[key]), ...refs.map((r) => r.value)));
+  const x = (t) => M.left + (t / duration) * (W - M.left - M.right);
+  const y = (v) => M.top + PLOT_H - (v / yMax) * PLOT_H;
+
+  // shot bands
+  for (const a of attempts) {
+    if (a.shotStart === null) continue;
+    const end = a.end ?? duration;
+    el("rect", { x: x(a.shotStart), y: M.top, width: Math.max(2, x(end) - x(a.shotStart)), height: PLOT_H, fill: "var(--wash)" }, svg);
+  }
+  // grid and y ticks
+  for (const frac of [0, 0.5, 1]) {
+    const v = yMax * frac;
+    el("line", { x1: M.left, x2: W - M.right, y1: y(v), y2: y(v), stroke: frac === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }, svg);
+    el("text", { x: M.left - 6, y: y(v) + 4, "text-anchor": "end", class: "tick" }, svg).textContent = v.toLocaleString();
+  }
+  // x ticks
+  for (let s = 0; s <= duration; s += 10) {
+    el("text", { x: x(s), y: H - 6, "text-anchor": "middle", class: "tick" }, svg).textContent = `${s}s`;
+  }
+  // threshold reference lines
+  for (const ref of refs) {
+    el("line", { x1: M.left, x2: W - M.right, y1: y(ref.value), y2: y(ref.value), stroke: "var(--text-muted)", "stroke-width": 1 }, svg);
+    el("text", { x: W - M.right + 6, y: y(ref.value) + 4, class: "ref-label" }, svg).textContent = ref.label;
+  }
+  // the line, broken wherever sampling paused
+  let d = "", prev = null;
+  for (const r of rows) {
+    const cmd = prev === null || r.t - prev > GAP_SECONDS ? "M" : "L";
+    d += `${cmd}${x(r.t).toFixed(1)},${y(r[key]).toFixed(1)}`;
+    prev = r.t;
+  }
+  el("path", { d, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+
+  // playhead and hover crosshair
+  el("line", { class: "playhead", y1: M.top, y2: M.top + PLOT_H, stroke: "var(--text-primary)", "stroke-width": 1.5 }, svg);
+  el("line", { class: "crosshair", y1: M.top, y2: M.top + PLOT_H, stroke: "var(--text-muted)", "stroke-width": 1, visibility: "hidden" }, svg);
+  svg._x = x;
+}
+
+function drawCharts() {
+  chartWidth = Math.max(320, $("chart-wrap").clientWidth);
+  drawSeries($("chart-light"), "light", "var(--series-light)", [
+    { value: CLOSE_T, label: String(CLOSE_T) },
+    { value: OPEN_T, label: String(OPEN_T) },
+  ]);
+  drawSeries($("chart-accel"), "accel", "var(--series-accel)",
+    session.accelThreshold ? [{ value: session.accelThreshold, label: session.accelThreshold.toFixed(2) }] : []);
+  drawSeries($("chart-gyro"), "gyro", "var(--series-gyro)", []);
+  renderPlayhead();
+}
+
+function nearestRow(t) {
+  const rows = session.rows;
+  let lo = 0, hi = rows.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].t < t) lo = mid + 1; else hi = mid;
+  }
+  if (lo > 0 && t - rows[lo - 1].t < rows[lo].t - t) lo--;
+  return rows[lo];
+}
+
+const SERIES = [
+  ["light", "Light", "var(--series-light)", (v) => String(v)],
+  ["accel", "Acceleration", "var(--series-accel)", (v) => `${v.toFixed(2)} g`],
+  ["gyro", "Rotation", "var(--series-gyro)", (v) => `${Math.round(v)} °/s`],
+];
+const STATE_NAMES = ["Idle", "Grip detected", "In shot"];
+
+function tooltipRow(parent, name, value, color) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const label = document.createElement("span");
+  label.className = "name";
+  if (color) {
+    const key = document.createElement("i");
+    key.className = "key";
+    key.style.borderColor = color;
+    label.appendChild(key);
+  }
+  label.appendChild(document.createTextNode(name));
+  const strong = document.createElement("strong");
+  strong.textContent = value;
+  row.append(strong, label);
+  // value leads visually; keep the label on the left for scanning
+  row.style.flexDirection = "row-reverse";
+  parent.appendChild(row);
+}
+
+function timeAtPointer(evt) {
+  const svg = $("chart-light");
+  const box = svg.getBoundingClientRect();
+  const px = ((evt.clientX - box.left) / box.width) * chartWidth;
+  const t = ((px - M.left) / (chartWidth - M.left - M.right)) * session.duration;
+  return Math.min(session.duration, Math.max(0, t));
+}
+
+function onChartMove(evt) {
+  const row = nearestRow(timeAtPointer(evt));
+  for (const svg of document.querySelectorAll("#chart-wrap svg")) {
+    const line = svg.querySelector(".crosshair");
+    line.setAttribute("x1", svg._x(row.t));
+    line.setAttribute("x2", svg._x(row.t));
+    line.setAttribute("visibility", "visible");
+  }
+  const tip = $("tooltip");
+  tip.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "name";
+  head.textContent = `${row.t.toFixed(2)} s · ${STATE_NAMES[row.state]}`;
+  tip.appendChild(head);
+  for (const [key, name, color, fmt] of SERIES) tooltipRow(tip, name, fmt(row[key]), color);
+  tip.hidden = false;
+  const wrap = $("chart-wrap").getBoundingClientRect();
+  const left = evt.clientX - wrap.left + 14;
+  tip.style.left = `${Math.min(left, wrap.width - tip.offsetWidth - 4)}px`;
+  tip.style.top = `${evt.clientY - wrap.top + 14}px`;
+}
+
+function onChartLeave() {
+  $("tooltip").hidden = true;
+  for (const line of document.querySelectorAll("#chart-wrap .crosshair")) line.setAttribute("visibility", "hidden");
+}
+
+// ---------- playback ----------
+
+// What the glove's LCD showed at time t
+function lcdAt(t) {
+  let message = { text: "Ready", tone: null };
+  for (const a of session.attempts) {
+    if (a.end === null || a.end > t) break;
+    if (a.outcome === "scored" && t - a.end < 2.2) message = { text: `Score:\n${a.score.toFixed(2)}`, tone: tone(a.score) };
+    else if (a.outcome === "rejected" && t - a.end < 1.2) message = { text: "Not a shot", tone: "critical" };
+    else message = { text: "Ready", tone: null };
+  }
+  return message;
+}
+
+function renderPlayhead() {
+  const row = nearestRow(playhead);
+  for (const svg of document.querySelectorAll("#chart-wrap svg")) {
+    const line = svg.querySelector(".playhead");
+    if (!line) continue;
+    line.setAttribute("x1", svg._x(playhead));
+    line.setAttribute("x2", svg._x(playhead));
+  }
+  for (const node of document.querySelectorAll(".state")) node.dataset.active = String(+node.dataset.state === row.state);
+  const lcd = lcdAt(playhead);
+  const lcdNode = $("lcd");
+  if (lcdNode.textContent !== lcd.text) lcdNode.textContent = lcd.text;
+  if (lcd.tone) lcdNode.dataset.tone = lcd.tone; else delete lcdNode.dataset.tone;
+  $("clock").textContent = `${playhead.toFixed(1)} s`;
+  $("scrub").value = Math.round((playhead / session.duration) * 1000);
+}
+
+function frame(now) {
+  if (!playing) return;
+  if (lastFrame !== null) playhead += ((now - lastFrame) / 1000) * speed;
+  lastFrame = now;
+  if (playhead >= session.duration) {
+    playhead = session.duration;
+    setPlaying(false);
+  }
+  renderPlayhead();
+  if (playing) requestAnimationFrame(frame);
+}
+
+function setPlaying(on) {
+  playing = on;
+  lastFrame = null;
+  $("play").textContent = on ? "Pause" : "Play";
+  if (on) {
+    if (playhead >= session.duration) playhead = 0;
+    requestAnimationFrame(frame);
+  }
+}
+
+// ---------- tables ----------
+
+const OUTCOME_TEXT = {
+  scored: "Scored",
+  rejected: "Rejected: not a shot",
+  cancelled: "Cancelled: grip opened before any motion",
+  incomplete: "Incomplete",
+};
+
+function renderAttempts() {
+  const body = $("attempts");
+  body.replaceChildren();
+  session.attempts.forEach((a, i) => {
+    const tr = document.createElement("tr");
+    const cells = [String(i + 1), `${a.start.toFixed(1)} s`];
+    cells.forEach((text, n) => {
+      const td = document.createElement("td");
+      if (n === 1) td.className = "num";
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    const outcome = document.createElement("td");
+    const wrap = document.createElement("span");
+    wrap.className = "outcome";
+    const dot = document.createElement("i");
+    dot.className = "dot";
+    if (a.outcome === "scored") dot.dataset.tone = tone(a.score);
+    wrap.append(dot, document.createTextNode(a.outcome === "scored" ? `Scored · ${toneWord(a.score)}` : OUTCOME_TEXT[a.outcome]));
+    outcome.appendChild(wrap);
+    const score = document.createElement("td");
+    score.className = "num";
+    score.textContent = a.score === null ? "" : a.score.toFixed(1);
+    const jump = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Replay";
+    btn.setAttribute("aria-label", `Replay attempt ${i + 1}`);
+    btn.addEventListener("click", () => {
+      playhead = Math.max(0, a.start - 0.5);
+      renderPlayhead();
+      setPlaying(true);
+      $("chart-wrap").scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    jump.appendChild(btn);
+    tr.append(outcome, score, jump);
+    body.appendChild(tr);
+  });
+}
+
+function summarise(data) {
+  const scored = data.attempts.filter((a) => a.outcome === "scored");
+  return {
+    attempts: data.attempts.length,
+    scored: scored.length,
+    rejected: data.attempts.filter((a) => a.outcome === "rejected").length,
+    cancelled: data.attempts.filter((a) => a.outcome === "cancelled").length,
+    mean: scored.length ? scored.reduce((s, a) => s + a.score, 0) / scored.length : null,
+    scores: scored.map((a) => a.score),
+  };
+}
+
+async function renderOverview() {
+  const all = await Promise.all(DATASETS.map((d) => load(d.id)));
+  const stats = all.map(summarise);
+
+  const body = $("summary");
+  body.replaceChildren();
+  DATASETS.forEach((d, i) => {
+    const s = stats[i];
+    const tr = document.createElement("tr");
+    [d.name, s.attempts, s.scored, s.rejected, s.cancelled, s.mean === null ? "" : s.mean.toFixed(1)].forEach((v, n) => {
+      const td = document.createElement("td");
+      if (n > 0) td.className = "num";
+      td.textContent = String(v);
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+
+  // strip plot: one row per session, one dot per scored shot
+  const svg = $("chart-scores");
+  svg.replaceChildren();
+  const W = Math.max(320, $("scores-wrap").clientWidth);
+  const narrow = W < 560;
+  const left = narrow ? 12 : 190, right = 16, top = 22, rowH = narrow ? 44 : 34;
+  const H = top + rowH * DATASETS.length + 26;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const xMax = 160;
+  const x = (v) => left + (v / xMax) * (W - left - right);
+
+  for (const v of [0, 40, 80, 120, 160]) {
+    el("line", { x1: x(v), x2: x(v), y1: top, y2: H - 22, stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }, svg);
+    el("text", { x: x(v), y: H - 6, "text-anchor": "middle", class: "tick" }, svg).textContent = String(v);
+  }
+  for (const v of [25, 50]) {
+    el("line", { x1: x(v), x2: x(v), y1: top, y2: H - 22, stroke: "var(--text-muted)", "stroke-width": 1 }, svg);
+    el("text", { x: x(v), y: top - 8, class: "ref-label", "text-anchor": "middle" }, svg).textContent = String(v);
+  }
+
+  const tip = $("scores-tooltip");
+  DATASETS.forEach((d, i) => {
+    const cy = top + rowH * i + rowH / 2 + (narrow ? 8 : 0);
+    const label = el("text", { x: narrow ? left : left - 12, y: narrow ? cy - 14 : cy + 4, "text-anchor": narrow ? "start" : "end", class: "event-label" }, svg);
+    label.textContent = d.name;
+    stats[i].scores.forEach((score) => {
+      const g = el("g", { tabindex: 0, role: "img", "aria-label": `${d.name}: score ${score.toFixed(1)}` }, svg);
+      el("circle", { cx: x(score), cy, r: 12, fill: "transparent" }, g);       // hit target
+      const mark = el("circle", { cx: x(score), cy, r: 5, fill: "var(--series-light)", stroke: "var(--surface)", "stroke-width": 2 }, g);
+      const show = () => {
+        tip.replaceChildren();
+        tooltipRow(tip, d.name, `${score.toFixed(1)} · ${toneWord(score)}`, null);
+        tip.hidden = false;
+        const wrap = $("scores-wrap").getBoundingClientRect();
+        const px = (x(score) / W) * wrap.width;
+        tip.style.left = `${Math.min(px + 12, wrap.width - tip.offsetWidth - 4)}px`;
+        tip.style.top = `${(cy / H) * wrap.height + 12}px`;
+        mark.setAttribute("r", 6.5);
+      };
+      const hide = () => { tip.hidden = true; mark.setAttribute("r", 5); };
+      g.addEventListener("pointerenter", show);
+      g.addEventListener("pointerleave", hide);
+      g.addEventListener("focus", show);
+      g.addEventListener("blur", hide);
+    });
+  });
+}
+
+// ---------- wiring ----------
+
+async function select(id) {
+  setPlaying(false);
+  session = await load(id);
+  playhead = 0;
+  for (const btn of $("datasets").children) btn.setAttribute("aria-pressed", String(btn.dataset.id === id));
+  $("dataset-note").textContent = DATASETS.find((d) => d.id === id).note;
+  drawCharts();
+  renderAttempts();
+}
+
+for (const d of DATASETS) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.dataset.id = d.id;
+  btn.textContent = d.name;
+  btn.addEventListener("click", () => select(d.id));
+  $("datasets").appendChild(btn);
+}
+
+$("play").addEventListener("click", () => setPlaying(!playing));
+$("speed").addEventListener("click", () => {
+  speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
+  $("speed").textContent = `${speed}×`;
+});
+$("scrub").addEventListener("input", (evt) => {
+  playhead = (evt.target.value / 1000) * session.duration;
+  lastFrame = null;
+  renderPlayhead();
+});
+$("chart-wrap").addEventListener("pointermove", onChartMove);
+$("chart-wrap").addEventListener("pointerleave", onChartLeave);
+$("chart-wrap").addEventListener("click", (evt) => {
+  playhead = timeAtPointer(evt);
+  lastFrame = null;
+  renderPlayhead();
+});
+window.addEventListener("resize", () => { if (session) { drawCharts(); renderOverview(); } });
+
+select("good_form").then(renderOverview).catch((err) => {
+  $("dataset-note").textContent = "Could not load the recorded sessions. If you opened this file directly, serve the folder over HTTP instead.";
+  console.error(err);
+});
+</script>
+</body>
+</html>
